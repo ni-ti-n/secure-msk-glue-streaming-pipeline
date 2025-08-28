@@ -1,0 +1,665 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+AWSTemplateFormatVersion: 2010-09-09
+Description:  This template deploys a VPC, with a pair of public and private subnets spread
+  across two Availability Zones. It deploys an internet gateway, with a default
+  route on the public subnets. It deploys a pair of NAT gateways (one in each AZ),
+  and default routes for them in the private subnets. It deploys a MSK serverless cluster, Kafka EC2 client
+  and S3 buckets for script and output.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: blog-poc
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.192.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.10.0/24
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.11.0/24
+
+  PrivateSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.20.0/24
+
+  PrivateSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.21.0/24
+
+  InstanceType:
+    Description: MSK client EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.nano, t2.micro, t2.small, t2.medium, t2.large, t2.xlarge, t2.2xlarge,
+      t3.nano, t3.micro, t3.small, t3.medium, t3.large, t3.xlarge, t3.2xlarge,
+      m4.large, m4.xlarge, m4.2xlarge, m4.4xlarge, m4.10xlarge,
+      m5.large, m5.xlarge, m5.2xlarge, m5.4xlarge,
+      c5.large, c5.xlarge, c5.2xlarge, c5.4xlarge, c5.9xlarge,
+      g3.8xlarge,
+      r5.large, r5.xlarge, r5.2xlarge, r5.4xlarge, r3.12xlarge,
+      i3.xlarge, i3.2xlarge, i3.4xlarge, i3.8xlarge,
+      d2.xlarge, d2.2xlarge, d2.4xlarge, d2.8xlarge]
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: Latest AMI ID of Amazon Linux 2 for ec2 instance. You can use the default value.
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  S3VpcEndoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      VpcId: !Ref VPC
+      RouteTableIds:
+      - !Ref PrivateRouteTable1
+      - !Ref PrivateRouteTable2
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "blog-security-group"
+      GroupDescription: "Security group with a self-referencing inbound rule."
+      VpcId: !Ref VPC
+
+  SecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref SecurityGroup
+  
+  BlogMSKServerlessCluster:
+    Type: 'AWS::MSK::ServerlessCluster'
+    Properties:
+      ClientAuthentication:
+        Sasl:
+          Iam:
+            Enabled: true
+      ClusterName: !Ref EnvironmentName
+      Tags:
+        Name: !Ref EnvironmentName
+      VpcConfigs:
+        - SecurityGroups:
+            - !Ref SecurityGroup
+          SubnetIds:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2  
+  
+  EC2Role: 
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "msk-ec2client-Role-${EnvironmentName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/'
+      ManagedPolicyArns: ["arn:aws:iam::aws:policy/AmazonSSMFullAccess"]
+      Policies:
+      - PolicyName: !Sub "mskserverlesscluster-readwrite-access-policy-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - kafka-cluster:Connect
+              - kafka-cluster:AlterCluster
+              - kafka-cluster:DescribeCluster
+            Resource: [ !Ref BlogMSKServerlessCluster ]
+          - Effect: Allow
+            Action:
+              - kafka-cluster:CreateTopic
+              - kafka-cluster:DescribeTopic
+              - kafka-cluster:WriteData
+              - kafka-cluster:ReadData
+            Resource: [ !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:topic/${EnvironmentName}/*/*' ]
+          - Effect: Allow
+            Action:
+              - kafka-cluster:AlterGroup
+              - kafka-cluster:DescribeGroup
+            Resource: [ !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:group/${EnvironmentName}/*/*' ]
+      - PolicyName: !Sub "cfn-msk-s3-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:PutObject*
+              - s3:List*
+            Resource: 
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketOutputBlog
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketOutputBlog
+                  - /*
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+                  - /*
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - 'aws-blogs-artifacts-public/artifacts/BDB-3411/mskserverlessprocessing.py'
+        
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      InstanceProfileName: !Sub "msk-ec2client-Role-${EnvironmentName}"
+      Roles: 
+        - 
+          !Ref EC2Role
+
+  MSKClientEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SubnetId: !Ref PublicSubnet1
+      ImageId: !Ref LatestAmiId
+      SecurityGroupIds: 
+       - !Ref SecurityGroup
+      Tags:
+        -
+          Key: Name
+          Value: !Ref AWS::StackName
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo yum -y install java-11
+            cd /home/ec2-user
+            wget https://www.openintro.org/data/csv/nycflights.csv
+            tail -n +2 nycflights.csv > tmp.csv && mv tmp.csv nycflights.csv
+            wget https://archive.apache.org/dist/kafka/2.8.1/kafka_2.12-2.8.1.tgz
+            tar -xzf kafka_2.12-2.8.1.tgz
+            cd kafka_2.12-2.8.1/libs
+            wget https://github.com/aws/aws-msk-iam-auth/releases/download/v1.1.1/aws-msk-iam-auth-1.1.1-all.jar
+            cd ../bin
+            echo "security.protocol=SASL_SSL" | sudo tee -a client.properties
+            echo "sasl.mechanism=AWS_MSK_IAM" | sudo tee -a client.properties
+            echo "sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;" | sudo tee -a client.properties
+            echo "sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler" | sudo tee -a client.properties
+            chown -R ec2-user:ec2-user /home/ec2-user/
+
+  S3BucketOutputBlog:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "aws-glueoutput-${AWS::AccountId}-${AWS::Region}-${EnvironmentName}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  
+  S3BucketInputBlog:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "aws-gluescript-${AWS::AccountId}-${AWS::Region}-${EnvironmentName}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  
+  S3CleanupFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "glue-msk-secleanup-role-${EnvironmentName}"
+      ManagedPolicyArns:
+        -  "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/service-role/'
+      Policies:
+      - PolicyName: !Sub "cfn-msk-msk-s3cleanup-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - iam:ListAttachedRolePolicies
+              - iam:DetachRolePolicy
+            Resource:
+              - !GetAtt EC2Role.Arn 
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:Delete*
+              - s3:List*
+            Resource: 
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketOutputBlog
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketOutputBlog
+                  - /*
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+                  - /*
+      Tags: 
+        - Key: AppName
+          Value: !Sub '${EnvironmentName}-${AWS::StackName}'
+  
+  CleanupResourcesOnDeletion:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging
+          import cfnresponse
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+            logger.info(event)
+            responseStatus = cfnresponse.SUCCESS
+            responseData = {}
+            iam_role = event['ResourceProperties'].get('IamRole')
+            bucket = event['ResourceProperties'].get('BucketName')
+            if bucket and event['RequestType'] == 'Delete':
+              try:
+                  s3 = boto3.resource('s3')
+                  bucket = s3.Bucket(bucket)
+                  for obj in bucket.objects.filter():
+                      s3.Object(bucket.name, obj.key).delete()
+                  responseStatus = cfnresponse.SUCCESS
+              except Exception as e:
+                  logger.exception(e)
+                  responseStatus = cfnresponse.FAILED
+            if iam_role and event['RequestType'] == 'Delete':
+              try:
+                iam = boto3.client('iam')
+                attached_policies = iam.list_attached_role_policies(RoleName=iam_role)
+                for policy in attached_policies['AttachedPolicies']:
+                  iam.detach_role_policy(RoleName=iam_role, PolicyArn=policy['PolicyArn'])
+                responseStatus = cfnresponse.SUCCESS
+              except Exception as e:
+                logger.exception(e)
+                responseStatus = cfnresponse.FAILED
+            cfnresponse.send(event, context, responseStatus, responseData)
+            return
+      FunctionName: !Sub "cfn-delete-resources-${EnvironmentName}"
+      Handler: index.lambda_handler
+      Role: !GetAtt S3CleanupFunctionExecutionRole.Arn
+      Runtime: python3.10
+      Timeout: 30
+
+  CleanupS3OutputBucketOnDelete:
+    Type: Custom::cleanups3bucket
+    Properties:
+      ServiceToken: !GetAtt CleanupResourcesOnDeletion.Arn 
+      BucketName: !Ref S3BucketOutputBlog
+
+  CleanupS3BucketOnDelete:
+    Type: Custom::cleanups3bucket
+    Properties:
+      ServiceToken: !GetAtt CleanupResourcesOnDeletion.Arn 
+      BucketName: !Ref S3BucketInputBlog
+  
+  DeattachIamPolicy:
+    Type: Custom::deatchpolicy
+    Properties:
+      ServiceToken: !GetAtt CleanupResourcesOnDeletion.Arn 
+      IamRole: !Ref EC2Role
+
+  BootstrapBrokersFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "glue-msk-getbroker-role-${EnvironmentName}"
+      ManagedPolicyArns:
+        -  "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/service-role/'
+      Policies:
+      - PolicyName: !Sub "cfn-msk-msk-brokers-policy-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - kafka:GetBootstrapBrokers
+            Resource: !Ref BlogMSKServerlessCluster
+      - PolicyName: !Sub "cfn-ec2-subnet-describe-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - ec2:DescribeSubnets
+            Resource: "*"
+      - PolicyName: !Sub "cfn-msk-s3-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:PutObject*
+              - s3:List*
+            Resource: 
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3BucketInputBlog
+                  - /*
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - 'aws-blogs-artifacts-public/artifacts/BDB-3411/mskserverlessprocessing.py'
+      Tags: 
+        - Key: AppName
+          Value: !Sub '${EnvironmentName}-${AWS::StackName}'
+            
+  BootstrapBrokersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import cfnresponse
+          import boto3
+          session = boto3.session.Session()
+          client = session.client('kafka')
+          ec2client = boto3.client('ec2')
+          s3client = boto3.client('s3')
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+            
+          def lambda_handler(event, context):
+            logger.info(event)
+            responseStatus = cfnresponse.FAILED
+            responseData = {}
+            ClusterArn = event['ResourceProperties'].get('ClusterArn')
+            if ClusterArn:
+              try:
+                ClusterArn = event['ResourceProperties']['ClusterArn']
+                response = client.get_bootstrap_brokers(
+                    ClusterArn=ClusterArn
+                )
+                logger.info(response)
+                if (response['ResponseMetadata']['HTTPStatusCode'] == 200):
+                    responseStatus = cfnresponse.SUCCESS
+                    responseData['BootstrapBrokerStringSaslIam'] = response['BootstrapBrokerStringSaslIam']
+                
+              except Exception:
+                logger.exception('Signaling failure to CloudFormation.')
+            
+            
+            Subnetid = event['ResourceProperties'].get('privateSubnetId')
+            if Subnetid:
+              try:
+                Subnetid = event['ResourceProperties']['privateSubnetId']
+                responseec2 = ec2client.describe_subnets(SubnetIds=[Subnetid])
+                logger.info(responseec2)
+                if (responseec2['ResponseMetadata']['HTTPStatusCode'] == 200):
+                    responseStatus = cfnresponse.SUCCESS
+                    responseData['privatesubnetAZ'] = responseec2["Subnets"][0]["AvailabilityZone"]
+                
+              except Exception:
+                logger.exception('Signaling failure to CloudFormation.')
+            
+
+            s3bucketinput = event['ResourceProperties'].get('S3BucketForGlueScriptCopy')
+            if s3bucketinput:
+              try:
+                s3bucketinput = event['ResourceProperties']['S3BucketForGlueScriptCopy']
+                responses3 = s3client.copy_object(Bucket=s3bucketinput,CopySource='aws-blogs-artifacts-public/artifacts/BDB-3411/mskserverlessprocessing.py',Key='mskserverlessprocessing.py',)
+                logger.info(responses3)
+                if (responses3['ResponseMetadata']['HTTPStatusCode'] == 200):
+                    responseStatus = cfnresponse.SUCCESS
+                
+              except Exception:
+                logger.exception('Signaling failure to CloudFormation.')
+            
+            cfnresponse.send(event, context, responseStatus, responseData)
+            return
+      FunctionName: !Sub "cfn-msk-bootstrap-brokers-${EnvironmentName}"
+      Handler: index.lambda_handler
+      Role: !GetAtt BootstrapBrokersFunctionExecutionRole.Arn
+      Runtime: python3.10
+      Timeout: 30
+
+  BootstrapBrokers:
+    Type: Custom::Function
+    Properties:
+      ServiceToken: !GetAtt BootstrapBrokersFunction.Arn
+      ClusterArn: !Ref BlogMSKServerlessCluster
+      privateSubnetId: !Ref PrivateSubnet1
+      S3BucketForGlueScriptCopy: !Ref S3BucketInputBlog
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+
+  GluePrivateSubnet:
+    Description: Glue connection Private Subnet.
+    Value: !Ref PrivateSubnet1
+
+  SecurityGroup:
+    Description: Security group with self-referencing inbound rule and ssh port whitelisted for ip, would also be used for glue connection.
+    Value: !Ref SecurityGroup
+
+  S3BucketForOutput:
+    Value: !Ref S3BucketOutputBlog
+    Description: S3 bucket name for Glue jobrun output files.
+  
+  S3BucketForGlueScript:
+    Value: !Ref S3BucketInputBlog
+    Description: S3 bucket name for Glue jobrun script files.
+
+  InstanceId:
+    Description: InstanceId of the newly created Kafka EC2 instance.
+    Value: !Ref MSKClientEC2
+
+  InstanceIdPublicDnsName:
+    Description: The Public DNS of EC2 Instance
+    Value: !GetAtt 'MSKClientEC2.PublicDnsName'
+
+  BlogMSKServerlessClusterARN:
+    Description: MSKServerless Cluster 
+    Value: !Ref BlogMSKServerlessCluster
+
+  MSKBootstrapServers:
+    Description: MSKServerless cluster Bootstrap Servers string.
+    Value: !GetAtt BootstrapBrokers.BootstrapBrokerStringSaslIam
+
+  GlueconnectionSubnetAZ:
+    Description: Glue connection Subnet Availability Zone.
+    Value: !GetAtt BootstrapBrokers.privatesubnetAZ

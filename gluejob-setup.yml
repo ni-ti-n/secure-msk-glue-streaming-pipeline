@@ -1,0 +1,292 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+ 
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: This template creates the AWS Glue resources such as database, table, connection, Glue job etc. for Stream consumer application.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  VpcId:
+    Description: The ID of the VPC for security group
+    Type: AWS::EC2::VPC::Id
+  GluePrivateSubnet:
+    Description: Subnet used for creating MSK cluser and Glue Connection.
+    Type: AWS::EC2::Subnet::Id
+  GlueconnectionSubnetAZ:
+    Description: Enter the AvailabilityZone for the private subnet1 used for Glue connection
+    Type: AWS::EC2::AvailabilityZone::Name
+  MSKBootstrapServers:
+    Description: Kafka bootstrap broker Endpoint such as boot-cqlbdn3p.c3.kafka-serverless.us-east-1.amazonaws.com:9098
+    Type: String
+  SecurityGroupForGlueConnection:
+    Description: Enter the Security Group created in the first step. This will used by Glue connection and EC2 instance.
+    Type: AWS::EC2::SecurityGroup::Id
+  S3BucketNameForScript:
+    Description: "Bucket name for Glue ETL script, Only provide the bucket name without s3://prefix eg: aws-gluescript"
+    Type: String
+  GlueDataBaseName:
+    Description: Database name on Glue catalog
+    Type: String
+    Default: "glue_kafka_blog_db"
+  GlueTableName:
+    Description: Table name on Glue catalog
+    Type: String
+    Default: "blog_kafka_tbl"
+  GlueWorkerType:
+    Description: Worker type for Glue job
+    Type: String
+    Default: G.1X
+    AllowedValues: [G.025X, G.1X, G.2X]
+    ConstraintDescription: must be a valid Glue Worker type.
+  NumberOfWorkers:
+    Description: Number of workers in Glue job
+    Type: Number
+    Default: 3
+    MinValue: 3
+  S3BucketNameForOutput:
+    Description: "Bucket name for writing data from Glue Job. Only provide the bucket name without s3://prefix eg: aws-glueoutput"
+    Type: String
+  TopicName:
+    Description: MSK Topic name that need to be processed.
+    Type: String
+    Default: "msk-serverless-blog"
+  
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups:
+      - 
+        Label: 
+          default: "General Parameters"
+        Parameters: 
+          - EnvironmentName
+          - VpcId
+          - GluePrivateSubnet
+
+        Label: 
+          default: "AWS Glue connection Parameters"
+        Parameters: 
+          - SecurityGroupForGlueConnection
+          - GlueconnectionSubnetAZ
+          - MSKBootstrapServers 
+      - 
+        Label: 
+          default: "AWS Glue Catalog Parameters"
+        Parameters: 
+          - GlueDataBaseName
+          - GlueTableName
+      - 
+        Label: 
+          default: "AWS Glue Jobs Parameters"
+        Parameters:
+          - S3BucketNameForScript
+          - GlueWorkerType
+          - NumberOfWorkers
+          - S3BucketNameForOutput
+          - TopicName
+
+Resources:
+  GlueConnectionMSK:
+    Type: 'AWS::Glue::Connection'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      ConnectionInput:
+        Name: GlueMskConnection
+        ConnectionProperties:  
+          KAFKA_BOOTSTRAP_SERVERS: !Ref MSKBootstrapServers
+          KAFKA_SSL_ENABLED: true
+          KAFKA_SASL_MECHANISM: AWS_MSK_IAM
+        ConnectionType: KAFKA
+        PhysicalConnectionRequirements:
+          SecurityGroupIdList: 
+            - !Ref SecurityGroupForGlueConnection
+          SubnetId: !Ref GluePrivateSubnet
+          AvailabilityZone: !Ref GlueconnectionSubnetAZ
+
+  GlueDataBase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Name: !Ref GlueDataBaseName
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      DatabaseName: !Ref GlueDataBase
+      CatalogId: !Ref 'AWS::AccountId'
+      TableInput:    
+        Name : !Ref GlueTableName
+        TableType:      EXTERNAL_TABLE
+        Parameters:
+          classification: csv
+          connectionName: !Ref GlueConnectionMSK
+        StorageDescriptor:
+          Columns:
+            - Name: year
+              Type: bigint
+
+            - Name: month
+              Type: bigint
+ 
+            - Name: day
+              Type: bigint
+ 
+            - Name: dep_time
+              Type: bigint
+
+            - Name: dep_delay
+              Type: bigint
+
+            - Name: arr_time
+              Type: bigint
+ 
+            - Name: arr_delay
+              Type: bigint
+ 
+            - Name: carrier
+              Type: string
+ 
+            - Name: tailnum
+              Type: string
+ 
+            - Name: flight
+              Type: bigint
+
+            - Name: origin
+              Type: string
+ 
+            - Name: dest
+              Type: string
+ 
+            - Name: air_time
+              Type: bigint
+ 
+            - Name: distance
+              Type: bigint
+
+            - Name: hour
+              Type: bigint
+
+            - Name: minute
+              Type: bigint
+
+          Location:  !Ref TopicName                         
+          Parameters: 
+            connectionName: !Ref GlueConnectionMSK
+            typeOfData: kafka
+            topicName:  !Ref TopicName
+          SerdeInfo:
+            SerializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe'
+            Parameters:
+              separatorChar: ','
+          InputFormat: 'org.apache.hadoop.mapred.TextInputFormat'
+          OutputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+  
+  GlueIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "Glue-ServiceRole-${EnvironmentName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - glue.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/'
+      ManagedPolicyArns:
+        -  "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+      Policies:
+      - PolicyName: !Sub "mskserverlesscluster-readwrite-access-policy-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - kafka-cluster:Connect
+              - kafka-cluster:AlterCluster
+              - kafka-cluster:DescribeCluster
+            Resource: [ !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:cluster/*/*' ]
+          - Effect: Allow
+            Action:
+              - kafka-cluster:CreateTopic
+              - kafka-cluster:DescribeTopic
+              - kafka-cluster:WriteData
+              - kafka-cluster:ReadData
+            Resource: [ !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:topic/*/*/*' ]
+          - Effect: Allow
+            Action:
+              - kafka-cluster:AlterGroup
+              - kafka-cluster:DescribeGroup
+            Resource: [ !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:group/*/*/*' ]
+      - PolicyName: !Sub "s3access-${EnvironmentName}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject*
+              - s3:ListBucket
+              - s3:GetObject*
+              - s3:DeleteObject*
+            Resource:   
+              - !Sub 'arn:aws:s3:::${S3BucketNameForScript}'
+              - !Sub 'arn:aws:s3:::${S3BucketNameForScript}/*' 
+              - !Sub 'arn:aws:s3:::${S3BucketNameForOutput}'
+              - !Sub 'arn:aws:s3:::${S3BucketNameForOutput}/*'
+
+  GlueStreamingJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "GlueStreamingJob-${EnvironmentName}"
+      Connections:
+        Connections:
+          -  !Ref GlueConnectionMSK
+      Command:
+        Name: gluestreaming
+        ScriptLocation: !Sub "s3://${S3BucketNameForScript}/mskserverlessprocessing.py"
+        PythonVersion: "3"
+      Description: "Glue straming job for processing MSK topic"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      GlueVersion: "4.0"
+      WorkerType: !Ref GlueWorkerType
+      NumberOfWorkers: !Ref NumberOfWorkers
+      DefaultArguments:
+        "--enable-continuous-cloudwatch-log": "true"
+        "--enable-job-insights": "true"
+        "--enable-metrics": "true"
+        "--enable-spark-ui": "true"
+        "--job-bookmark-option": "job-bookmark-disable"
+        "--spark-event-logs-path": !Sub "s3://${S3BucketNameForScript}/eventlogs/"
+        "--database_name": !Ref GlueDataBase
+        "--table_name": !Ref GlueTable
+        "--topic_name": !Ref TopicName
+        "--dest_dir": !Sub "s3://${S3BucketNameForOutput}/"
+      Role: !Ref GlueIamRole
+      Tags:
+        AppName: !Sub '${EnvironmentName}-${AWS::StackName}'
+  
+Outputs:
+  MSKBootstrapServers:
+    Description: MSK Bootstrap Servers
+    Value: !Ref MSKBootstrapServers
+  GlueJobName:
+     Description: Glue job name
+     Value: !Ref GlueStreamingJob
+  GlueDatabase: 
+    Description: Glue database name
+    Value: !Ref GlueDataBase
+  GlueTableName:
+    Description: Glue table name
+    Value: !Ref GlueTable
+  OutputBucketName:
+    Value: !Ref S3BucketNameForOutput
+    Description: Name of the Amazon S3 bucket used to write Glue Streaming job output.
+  GlueJobIAMRole:
+    Value: !Ref GlueIamRole
+    Description: IAM Role ARN for Glue job.
