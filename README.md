@@ -20,6 +20,7 @@ Key benefits include:
 
 The architecture comprises:
 
+![Architecture](https://d2908q01vomqb2.cloudfront.net/b6692ea5df920cad691c20319a6fffd7a4a766b8/2023/09/05/BDB_3411_architecture_image001.png)
 1. **MSK Serverless cluster with IAM-enabled authentication**, receiving input from a Kafka producer on an EC2 instance.  
 2. **AWS Glue streaming job** reads from MSK Serverless, writes to Amazon S3, and catalogs data in AWS Glue Data Catalog.  
 3. **Amazon Athena** enables SQL-like queries on the processed data.  
