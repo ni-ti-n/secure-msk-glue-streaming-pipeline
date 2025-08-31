@@ -2,8 +2,7 @@
 
 This repository serves as a companion documentation for the AWS Big Data blog post:
 
-**Securely process near-real-time data from Amazon MSK Serverless using an AWS Glue streaming ETL job with IAM authentication**  
-(see the [blog post here](https://aws.amazon.com/blogs/big-data/securely-process-near-real-time-data-from-amazon-msk-serverless-using-an-aws-glue-streaming-etl-job-with-iam-authentication/))
+**Securely process near-real-time data from Amazon MSK Serverless using an AWS Glue streaming ETL job with IAM authentication** (see the [blog post here](https://aws.amazon.com/blogs/big-data/securely-process-near-real-time-data-from-amazon-msk-serverless-using-an-aws-glue-streaming-etl-job-with-iam-authentication/))
 
 ## Overview
 
